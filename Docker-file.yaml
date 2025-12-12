@@ -1,0 +1,123 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmimage:  ubuntu-latest
+
+
+variables:
+  acr_name: "mymcr"
+  acr_login_server:
+  image_name: "api-api"
+  gitops_repo_url: "https://dev.azure.com/<org>/<project>/_git/gitops-repoo"
+  dev_overlay_path: "apps/jackpot-api/overlays/dev"
+  prod_overlay_path: "apps/jackpot-api/overlays/prod"
+
+
+stages:
+- stage: BuildAndPush
+  displayName: Build & Push Image
+  jobs:
+  - job: Build
+    steps:
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+        short_sha="$(echo "$(Build.SourceVersion)" | cut -c1-7)"
+        echo "##vso[task.setvariable variable=Image_TAG]$(Build.BuildId)-${Short_sha}"
+        echo "Image_tag=$(Build.BuildId)-${short_sha}"
+
+       displayName: "compute image tag"
+
+    - task: Docker@2
+      displayName: "Login tp ACR"
+      inputs: 
+        command:  login
+        containerReistry: "ACR-ServiceConnection"
+
+    - task: Docker@2
+      dispayName: "Build & Push"
+      inputs:
+        command: buildAndPush
+        repository: "$(Image_name)"
+        dockerfile: "Dockerfile"
+        containerReistry: "acr-ServiceConnection"
+        tags: |
+          $(Image_Tag)
+
+- stage: UpdateGitops
+  displayName: Update Gitops Repo (deploy)
+  dependsOn: BuildAndPush
+  jobs:
+  - job: Update
+    steps:
+    - checkout: none
+
+    - bash: |
+        set -euo pipefail
+        sudo wget -q0 /usr/local/bin/yq https://github.com/mikefarah/yq/release/latest/download/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+        yq  --version
+
+      displayName: "install yq"
+
+      - bash: |
+          set -euo pipefail
+
+          branch= "$(build.SourceBranchName)"
+          if [ "$Branch" = "develop" ]; then
+              overlay_path="$(dev_overlay_path)"
+          elif [ "$Branch" = "main" ]; then
+              overlay_path="$(prod_overlay_path)"
+          else
+              overlay_path="$(dev_overlay_path)"
+          fi
+
+          echo "using overlay: $overlay_path"
+          echo "##vso[task.setvariable variable=overlay_path]$overlay_path"
+
+        - bash: |
+            set -euo pipefail
+
+        # ---- IMPORTANT ----
+        # Store this PAT in Azure DevOps variable group as secret, e.g. GITOPS_PAT
+        # Give it Code Read/Write permission for the gitops-repo project.
+        #
+        # We'll clone using PAT:
+        # https://<PAT>@dev.azure.com/...
+        #
+        GITOPS_PAT="$(GITOPS_PAT)"
+        if [ -z "$GITOPS_PAT" ]; then
+          echo "GITOPS_PAT is empty. Add it as a secret variable."
+          exit 1
+        fi
+
+        CLONE_URL="$(GITOPS_REPO_URL)"
+        AUTH_URL="$(echo "$CLONE_URL" | sed "s#https://#https://${GITOPS_PAT}@#")"
+
+        rm -rf gitops-repo
+        git clone "$AUTH_URL" gitops-repo
+        cd gitops-repo
+
+        git config user.email "ci-bot@company.local"
+        git config user.name  "ci-bot"
+
+        FILE="$(OVERLAY_PATH)/kustomization.yaml"
+
+        echo "Updating $FILE to tag $(IMAGE_TAG)"
+        yq -i '.images[] |= (select(.name == "'"$(ACR_LOGIN_SERVER)/$(IMAGE_NAME)"'") .newTag = "'"$(IMAGE_TAG)"'")' "$FILE"
+
+        git add "$FILE"
+        git commit -m "deploy($(IMAGE_NAME)): $(IMAGE_TAG) -> $(OVERLAY_PATH)" || echo "No changes to commit"
+        git push origin HEAD:main
+      displayName: "Update image tag in GitOps repo"
+      env:
+        GITOPS_PAT: $(GITOPS_PAT)
+
+
+
+            
