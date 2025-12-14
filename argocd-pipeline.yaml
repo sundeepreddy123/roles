@@ -1,0 +1,31 @@
+name: CI Build
+
+on:
+  push:
+    branches:
+      -  main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+
+    - name: Login to Docker Registry
+      run: echo "${{ secrets.Docker_Password }}" | docker login \
+            -u "${{ secrets.Docker_Username }}" --password-stdin
+
+    - name: Push Docker image
+      run: |
+        docker push myrepo/backend:${{ github.sha }}
+
+    - name: Update Gitops repo
+      run: |
+        git clone https://github.com/org/gitops-repo.git
+        cd gitops-repo
+        sed -i "s|image:.*|image: myrepo/backend:${{ github.sha }}|" apps apps/backend/deployment.yaml
+        git commit -am "update backend image"
+        git push
