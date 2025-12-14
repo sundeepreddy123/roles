@@ -1,0 +1,21 @@
+apiversion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend
+  namespace: argocd
+  annotations:
+    argocd-image-updater.argoproj.io/image-list: backend=myrepo/backend
+    argocd-image-updater.argoroj.io/backend.update-strategy: semver
+    argocd-image-updater.argoproj.io/backend.helm.image-tag: image.tag
+spec:
+  source:
+    repoURL: https://github.com/org/gitops-repo.git
+    path: charts/backend
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backend
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
